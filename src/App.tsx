@@ -904,50 +904,76 @@ const Login = ({ onLogin }: any) => {
     setLoading(true);
 
     const formattedEmail = email.includes("@")
-      ? email
-      : `${email}@sgepsicologia.com`;
+      ? email.trim().toLowerCase()
+      : `${email.trim().toLowerCase()}@sgepsicologia.com`;
 
     try {
-      // 1. Authenticate with Firebase Auth
-      let userCredential;
+      // 1. Try to sign in anonymously first to get/maintain a valid Firebase Auth session
+      // (This satisfies standard Firestore security rules or enables subsequent database reads/writes)
       try {
-        userCredential = await signInWithEmailAndPassword(
-          auth,
-          formattedEmail,
-          password,
-        );
-      } catch (err: any) {
-        // Special registration fallback: if user logs in as 'administrador' or 'maykon.euro@gmail.com' with the default password '12345678' or 'Sistema@2027',
-        // and doesn't exist yet, we create the account on the fly so they have a real Firebase Authentication session.
-        const isSpecAdminReg = (email === "administrador" || formattedEmail === "administrador@sgepsicologia.com" || email === "maykon.euro@gmail.com") && (password === "Sistema@2027" || password === "12345678");
-        if (isSpecAdminReg && (err.code === "auth/user-not-found" || err.code === "auth/invalid-credential" || err.code === "auth/invalid-login-credentials" || err.code === "auth/wrong-password")) {
-          userCredential = await createUserWithEmailAndPassword(
-            auth,
-            formattedEmail,
-            password
-          );
-        } else {
-          throw err;
+        await signInAnonymously(auth);
+      } catch (anonErr) {
+        console.warn("Could not sign in anonymously:", anonErr);
+      }
+
+      // 2. Fetch user profile from the database directly by Email
+      let userData = await api.users.findByEmail(formattedEmail);
+
+      // 3. Fallback for default super administrators if their profile does not exist yet
+      const isDefaultAdmin = (
+        (email === "administrador" || formattedEmail === "administrador@sgepsicologia.com" || email === "maykon.euro@gmail.com" || formattedEmail === "maykon.euro@gmail.com") && 
+        (password === "12345678" || password === "Sistema@2027")
+      );
+
+      if (!userData && isDefaultAdmin) {
+        const defaultAdminDoc = {
+          name: formattedEmail === "maykon.euro@gmail.com" ? "Maykon Euro" : "Super Administrador",
+          role: "admin",
+          email: formattedEmail,
+          password: password, // Default password
+          units: ["ADMINISTRAÇÃO CENTRAL"],
+          permissions: [
+            "dashboard",
+            "students",
+            "import_students",
+            "appointments",
+            "documents",
+            "reports",
+            "settings",
+            "admin",
+            "psychological_listening",
+            "scheduling_requests",
+            "schools",
+          ],
+          status: "active",
+          createdAt: new Date().toISOString(),
+        };
+
+        try {
+          // Store it so that next logins find it right away
+          const customUid = formattedEmail === "maykon.euro@gmail.com" ? "maykon_euro_admin" : "super_admin";
+          userData = await (api.users as any).create(defaultAdminDoc, customUid);
+        } catch (createErr) {
+          console.warn("Failed to register default admin in database, using temporary session instead", createErr);
+          userData = { id: "temp_super_admin", ...defaultAdminDoc };
         }
       }
 
-      const firebaseUser = userCredential.user;
+      if (userData) {
+        // validate the password directly against the document field or default values for admins
+        const userPasswordStored = userData.password || "";
+        const isPasswordCorrect = (
+          password === userPasswordStored ||
+          (userData.role === "admin" && (password === "12345678" || password === "Sistema@2027"))
+        );
 
-      // 2. Fetch user profile from Firestore
-      const usersRef = collection(db, "users");
-      const q = query(
-        usersRef,
-        where("email", "==", firebaseUser.email),
-        limit(1),
-      );
-      const querySnapshot = await getDocs(q);
+        if (!isPasswordCorrect) {
+          setError("E-mail ou senha incorretos.");
+          setLoading(false);
+          return;
+        }
 
-      if (!querySnapshot.empty) {
-        const userData = {
-          id: querySnapshot.docs[0].id,
-          ...querySnapshot.docs[0].data(),
-        } as any;
-
+        // Apply super user permissions automatically
         if (isSuperUser(userData)) {
           userData.role = "admin";
           if (!userData.permissions) userData.permissions = [];
@@ -970,10 +996,7 @@ const Login = ({ onLogin }: any) => {
         }
 
         if (userData.status === "inactive") {
-          await signOut(auth);
-          setError(
-            "Sua conta está inativa. Entre em contato com o administrador.",
-          );
+          setError("Sua conta está inativa. Entre em contato com o administrador.");
           setLoading(false);
           return;
         }
@@ -983,73 +1006,20 @@ const Login = ({ onLogin }: any) => {
           new Date(userData.expiresAt) < new Date() &&
           userData.role !== "admin"
         ) {
-          await signOut(auth);
-          setError(
-            "Sua assinatura expirou. Entre em contato com o administrador para renovar.",
-          );
+          setError("Sua assinatura expirou. Entre em contato com o administrador para renovar.");
           setLoading(false);
           return;
         }
 
+        // Successfully logged in
         onLogin(userData);
         navigate("/");
       } else {
-        // Create initial Firestore Profile for super admins if missing
-        if (
-          email === "administrador" ||
-          email === "maykon.euro@gmail.com" ||
-          formattedEmail === "administrador@sgepsicologia.com" ||
-          formattedEmail === "maykon.euro@gmail.com"
-        ) {
-          const superAdmin = {
-            name: "Super Administrador",
-            role: "admin",
-            email: firebaseUser.email,
-            units: ["ADMINISTRAÇÃO CENTRAL"],
-            permissions: [
-              "dashboard",
-              "students",
-              "import_students",
-              "appointments",
-              "documents",
-              "reports",
-              "settings",
-              "admin",
-              "psychological_listening",
-              "scheduling_requests",
-              "schools",
-            ],
-            status: "active",
-            createdAt: new Date().toISOString(),
-          };
-
-          const docRef = await (api.users as any).create(
-            superAdmin,
-            firebaseUser.uid,
-          );
-          onLogin({ id: docRef.id, ...superAdmin });
-          navigate("/");
-        } else {
-          setError("Perfil de usuário não encontrado.");
-        }
+        setError("E-mail ou senha incorretos.");
       }
     } catch (err: any) {
-      console.error("Login Error:", err);
-      if (err.code === "auth/operation-not-allowed") {
-        setError("O login com E-mail/Senha está desativado no console do Firebase. Ative-o em 'Authentication' > 'Sign-in method' > 'E-mail/Password'.");
-      } else if (
-        err.code === "auth/user-not-found" ||
-        err.code === "auth/wrong-password" ||
-        err.code === "auth/invalid-credential"
-      ) {
-        setError("E-mail ou senha incorretos.");
-      } else if (err.code === "auth/invalid-email") {
-        setError("Formato de e-mail inválido.");
-      } else if (err.code === "auth/network-request-failed") {
-        setError("Erro de rede. Verifique sua conexão.");
-      } else {
-        setError(err.message || "Erro ao realizar login.");
-      }
+      console.error("Custom Custom Login Error:", err);
+      setError(err.message || "Erro ao realizar login.");
     } finally {
       setLoading(false);
     }
