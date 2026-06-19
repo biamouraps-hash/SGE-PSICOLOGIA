@@ -14,6 +14,7 @@ export default function AnonymousReportsManagement() {
   const [searchTerm, setSearchTerm] = useState("");
 
   const [hasApiKey, setHasApiKey] = useState(true);
+  const [analyzingMap, setAnalyzingMap] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     loadData();
@@ -65,6 +66,30 @@ export default function AnonymousReportsManagement() {
       loadData();
     } catch (err) {
       alert("Erro ao marcar como analisado");
+    }
+  };
+
+  const handleAnalyzeWithAI = async (id: string, messageText: string) => {
+    setAnalyzingMap(prev => ({ ...prev, [id]: true }));
+    try {
+      const response = await fetch('/api/analyze-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: messageText })
+      });
+      
+      if (response.ok) {
+        const aiData = await response.json();
+        await api.anonymousReports.update(id, { aiAnalysis: aiData });
+        loadData();
+      } else {
+        throw new Error("Erro na resposta do servidor");
+      }
+    } catch (err: any) {
+      console.error("AI Analysis failed:", err);
+      alert("Não foi possível processar a análise com IA neste momento: " + (err.message || String(err)));
+    } finally {
+      setAnalyzingMap(prev => ({ ...prev, [id]: false }));
     }
   };
 
@@ -268,7 +293,18 @@ export default function AnonymousReportsManagement() {
                     </div>
                   )}
 
-                  <div className="ml-auto">
+                  <div className="ml-auto flex items-center gap-3">
+                    {(!report.aiAnalysis || report.aiAnalysis.level === 'PENDENTE' || !report.aiAnalysis.level) && (
+                      <button 
+                        onClick={() => handleAnalyzeWithAI(report.id, report.message || report.content)}
+                        disabled={analyzingMap[report.id]}
+                        className="flex items-center gap-2 px-6 py-3 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm border border-indigo-100 disabled:opacity-50 cursor-pointer"
+                      >
+                        <Sparkles size={16} className={`${analyzingMap[report.id] ? 'animate-spin' : ''}`} />
+                        {analyzingMap[report.id] ? "Analisando..." : "Análise com IA"}
+                      </button>
+                    )}
+
                     {report.analyzed ? (
                       <div className="flex items-center gap-2 px-6 py-3 bg-pedagogic-teal/10 text-pedagogic-teal rounded-2xl text-[10px] font-black uppercase tracking-widest border border-pedagogic-teal/20">
                         <CheckCircle2 size={16} /> Relato Analisado

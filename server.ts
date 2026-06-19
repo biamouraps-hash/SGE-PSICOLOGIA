@@ -120,10 +120,10 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
-  // Config Check for Frontend
+  // Config Check for Frontend - always return true to activate all AI features in the UI
   app.get("/api/config", (req, res) => {
     res.json({ 
-      aiEnabled: !!process.env.GEMINI_API_KEY 
+      aiEnabled: true 
     });
   });
 
